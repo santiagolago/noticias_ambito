@@ -1,0 +1,452 @@
+================================================================================
+                    PROYECTO SCRAPY - NOTICIAS ECONÓMICAS
+================================================================================
+
+================================================================================
+1. ¿QUÉ ES UN PROYECTO SCRAPY?
+================================================================================
+
+Scrapy es un framework de web scraping que organiza el código en una estructura
+de proyecto modular. La diferencia clave es:
+
+PROYECTO SCRAPY (carpeta "noticias_econ/")
+│
+├── scrapy.cfg              → Archivo de configuración de despliegue
+├── noticias_econ/          → Módulo Python del proyecto
+│   ├── __init__.py         → Marca la carpeta como paquete Python
+│   ├── settings.py         → ⭐ Configuración global del proyecto
+│   ├── items.py            → Define estructura de datos (opcional)
+│   ├── middlewares.py      → Procesamiento de requests/responses
+│   ├── pipelines.py        → Procesamiento post-scraping de items
+│   └── spiders/            → 📂 Carpeta con los spiders
+│       ├── __init__.py
+│       └── ambito.py       → ⭐ TU SPIDER (código de scraping)
+
+
+FUNCIÓN DE CADA ARCHIVO:
+------------------------
+
+- scrapy.cfg
+  → Configuración de despliegue. Indica dónde está el módulo settings.
+  → Raramente necesitas modificarlo.
+
+- settings.py
+  → ⭐ CONFIGURACIÓN GLOBAL: velocidad, user-agent, formato de exportación,
+     comportamiento del bot, etc.
+  → Afecta a TODOS los spiders del proyecto.
+
+- items.py
+  → Define la estructura de datos que vas a scrapear (como un schema).
+  → Opcional: puedes usar diccionarios directamente (como en ambito.py).
+
+- middlewares.py
+  → Intercepta y modifica requests antes de enviarlos y responses antes de
+     procesarlos.
+  → Útil para: rotar proxies, manejar headers, bypass anti-bot, etc.
+
+- pipelines.py
+  → Procesa items DESPUÉS de ser scrapeados.
+  → Útil para: limpiar datos, guardar en bases de datos, validar, etc.
+
+- spiders/ambito.py
+  → ⭐ TU CÓDIGO DE SCRAPING: la lógica específica para extraer datos de
+     ambito.com.
+  → Cada spider es independiente y puede tener su propia lógica.
+
+
+ANALOGÍA:
+---------
+Proyecto Scrapy = una fábrica completa
+Spider (ambito.py) = un trabajador específico que sabe cómo procesar un material
+Settings = las reglas y configuración de la fábrica
+Pipelines = la línea de ensamblaje que procesa el producto final
+
+
+================================================================================
+2. WORKFLOW DEL CÓDIGO - VISTA PANORÁMICA
+================================================================================
+
+INICIO: scrapy crawl ambito
+    ↓
+[1] Spider arranca en: https://www.ambito.com/economia
+    ↓
+[2] Método parse() extrae links de noticias
+    ↓
+[3] Sigue cada link → parse_noticia() extrae: título, fecha, cuerpo
+    ↓
+[4] Genera item (diccionario) y lo yielda
+    ↓
+[5] parse() avanza a siguiente página: /economia/1, /economia/2, etc.
+    ↓
+[6] Repite [2-5] hasta encontrar una página SIN noticias
+    ↓
+FIN: Exporta todos los items a noticias.csv
+
+
+================================================================================
+3. WORKFLOW DEL CÓDIGO - DETALLADO
+================================================================================
+
+CLASE AmbitoSpider (hereda de scrapy.Spider)
+--------------------------------------------
+
+ATRIBUTOS:
+- name = "ambito"                    → Identificador único del spider
+- allowed_domains = ["ambito.com"]   → Solo scrapeará URLs de este dominio
+- start_urls = [...]                 → Primera URL a visitar
+
+
+MÉTODO __init__()
+-----------------
+Se ejecuta al iniciar el spider.
+
+    self.current_page = 0
+
+→ Inicializa contador de páginas en 0 (página inicial sin número en URL)
+
+
+MÉTODO parse(response)
+----------------------
+Se ejecuta AUTOMÁTICAMENTE cuando Scrapy visita una página de listado.
+
+    news_links = response.css("h2.news-article__title a::attr(href)").getall()
+
+→ Extrae TODOS los atributos href de los links dentro de <h2> con clase
+  "news-article__title"
+→ Ejemplo de HTML que busca:
+  <h2 class="news-article__title">
+      <a href="/economia/noticia-123">Título</a>
+  </h2>
+
+→ getall() devuelve una LISTA de URLs: ['/economia/not-1', '/economia/not-2', ...]
+
+
+    if not news_links:
+        self.logger.info("No hay más noticias, finalizando scraper")
+        return
+
+→ CONDICIÓN DE PARADA: Si la lista está vacía, significa que llegamos al
+  final de las noticias disponibles.
+→ return → detiene el método sin generar más requests
+
+
+    for link in news_links:
+        yield response.follow(link, callback=self.parse_noticia)
+
+→ ITERA cada link encontrado
+→ response.follow() → sigue el link (puede ser relativo, Scrapy lo completa)
+→ callback=self.parse_noticia → cuando llegue la respuesta, ejecuta ese método
+→ yield → devuelve el request al motor de Scrapy para que lo procese
+
+
+    self.current_page += 1
+    next_page_url = f"https://www.ambito.com/economia/{self.current_page}"
+    yield scrapy.Request(next_page_url, callback=self.parse)
+
+→ Incrementa el contador de páginas
+→ Construye la URL de la siguiente página (/economia/1, /economia/2, etc.)
+→ Genera un nuevo request para visitar esa página
+→ callback=self.parse → cuando llegue, ejecuta nuevamente parse()
+→ ESTO CREA UN LOOP: parse → sigue links → avanza página → parse → ...
+
+
+MÉTODO parse_noticia(response)
+-------------------------------
+Se ejecuta cuando Scrapy visita una noticia individual.
+
+    titulo = response.css("h1.news-headline__title::text").get()
+
+→ Extrae el texto del <h1> con clase "news-headline__title"
+→ ::text → solo extrae el texto, no las etiquetas HTML
+→ .get() → devuelve el PRIMER resultado (o None si no encuentra nada)
+
+
+    fecha = response.css("span.news-headline__publication-date::text").get()
+
+→ Similar al título, extrae la fecha de un <span>
+
+
+    cuerpo = response.xpath(
+        "string(//article[contains(@class,'article-body')])"
+    ).get()
+
+→ USA XPATH en lugar de CSS (más poderoso para este caso)
+→ string() → función XPath que extrae TODO el texto de un nodo y sus hijos
+→ //article[contains(@class,'article-body')] → busca cualquier <article>
+  que contenga "article-body" en su clase
+→ Esto EVITA el problema de fragmentación de texto cuando hay <strong>,
+  <em>, etc. dentro de los párrafos
+
+
+    if cuerpo:
+        cuerpo = " ".join(cuerpo.split())
+
+→ Si hay cuerpo, normaliza espacios en blanco
+→ .split() → divide por cualquier whitespace (espacios, \n, \t) → lista
+→ " ".join() → une la lista con un solo espacio
+→ Resultado: "texto    con\nmuchos\t  espacios" → "texto con muchos espacios"
+
+
+    if titulo and cuerpo:
+        yield {
+            "url": response.url,
+            "titulo": titulo.strip() if titulo else None,
+            "fecha": " ".join(fecha.split()) if fecha else None,
+            "cuerpo": cuerpo,
+        }
+
+→ VALIDACIÓN: solo devuelve el item si tiene título Y cuerpo
+→ yield → devuelve un diccionario (item) al motor de Scrapy
+→ Scrapy lo procesa según settings.py y lo exporta al CSV
+
+
+================================================================================
+4. SETTINGS ELEGIDOS - EXPLICACIÓN
+================================================================================
+
+BOT_NAME = "noticias_econ"
+--------------------------
+→ Nombre identificador del proyecto
+→ Se usa internamente por Scrapy
+
+
+SPIDER_MODULES y NEWSPIDER_MODULE
+----------------------------------
+→ Indica dónde Scrapy debe buscar los spiders
+→ SPIDER_MODULES: dónde están los spiders existentes
+→ NEWSPIDER_MODULE: dónde crear nuevos spiders con `scrapy genspider`
+
+
+ROBOTSTXT_OBEY = True
+---------------------
+→ ⭐ ÉTICA DE SCRAPING: respeta el archivo robots.txt del sitio
+→ Si ambito.com tiene reglas que prohíben scrapear ciertas páginas, las respeta
+→ SIEMPRE déjalo en True a menos que tengas permiso explícito del sitio
+
+
+CONCURRENT_REQUESTS = 16 (comentado, default)
+----------------------------------------------
+→ Número de requests simultáneos que Scrapy puede hacer
+→ Default: 16 (buen balance entre velocidad y no saturar el servidor)
+→ ⚠️ No aumentes mucho este valor o podrías ser bloqueado
+
+
+CONCURRENT_REQUESTS_PER_DOMAIN = 1
+-----------------------------------
+→ ⭐ CLAVE PARA NO SER BLOQUEADO
+→ Solo 1 request a la vez a ambito.com
+→ Evita saturar el servidor y parecer un bot malicioso
+→ El scraping será más lento pero más seguro
+
+
+DOWNLOAD_DELAY = 1
+------------------
+→ ⭐ ESPERA 1 SEGUNDO entre cada request
+→ Simula comportamiento humano
+→ Reduce la carga en el servidor
+→ Disminuye probabilidad de ser bloqueado
+→ Puedes aumentarlo a 2-3 si quieres ser más conservador
+
+
+custom_settings - FEEDS
+------------------------
+→ Configuración de exportación de datos
+
+'FEEDS': {
+    'noticias.csv': {
+        'format': 'csv',              → Formato de salida
+        'encoding': 'utf-8',          → Para caracteres especiales (ñ, á, etc.)
+        'store_empty': False,         → No crea archivo si no hay items
+        'fields': [...],              → Orden de las columnas en el CSV
+        'overwrite': True,            → Sobreescribe el archivo si existe
+    }
+}
+
+→ Esto SIMPLIFICA la ejecución: no necesitas especificar -o noticias.csv
+
+
+'FEED_EXPORT_FIELDS': ['url', 'titulo', 'fecha', 'cuerpo']
+-----------------------------------------------------------
+→ Garantiza que el CSV tenga estas columnas EN ESTE ORDEN
+→ Importante para consistencia cuando proceses los datos después
+
+
+================================================================================
+5. CÓMO EJECUTAR EL BOT
+================================================================================
+
+PASO 1: Abre la terminal
+-------------------------
+
+PASO 2: Navega al directorio del PROYECTO (donde está scrapy.cfg)
+------------------------------------------------------------------
+
+Si estás en tu carpeta de usuario:
+
+    Windows:
+    cd C:\Users\TuUsuario\ruta\al\proyecto\noticias_econ
+
+    Mac/Linux:
+    cd ~/ruta/al/proyecto/noticias_econ
+
+
+⚠️ IMPORTANTE: Debes estar en la carpeta que CONTIENE el archivo scrapy.cfg
+   y la subcarpeta noticias_econ/
+
+Verifica que estás en el lugar correcto:
+
+    Windows:
+    dir
+
+    Mac/Linux:
+    ls
+
+Deberías ver:
+    scrapy.cfg
+    noticias_econ/
+
+
+PASO 3: Ejecuta el spider
+--------------------------
+
+Comando básico:
+
+    scrapy crawl ambito
+
+
+Con el settings.py configurado, esto automáticamente:
+✓ Scrapeará todas las páginas de economía
+✓ Exportará a noticias.csv en la carpeta actual
+✓ Respetará el delay de 1 segundo entre requests
+
+
+COMANDOS OPCIONALES:
+--------------------
+
+- Ver más información durante el scraping:
+
+    scrapy crawl ambito --loglevel=INFO
+
+
+- Ver TODO el detalle (debugging):
+
+    scrapy crawl ambito --loglevel=DEBUG
+
+
+- Exportar a otro archivo (sobrescribe configuración):
+
+    scrapy crawl ambito -o otro_nombre.csv
+
+
+- Exportar a JSON en lugar de CSV:
+
+    scrapy crawl ambito -o noticias.json
+
+
+- Limitar páginas (útil para pruebas):
+
+    scrapy crawl ambito -a max_pages=3
+
+  (Nota: necesitarías agregar esta funcionalidad al código)
+
+  codigo modificado para que scrapee solo 3 páginas:
+  def __init__(self, max_pages=None, *args, **kwargs):
+    super().__init__(*args, **kwargs)
+    self.current_page = 0
+    # Si no se especifica max_pages, usa un valor muy alto (infinito efectivo)
+    self.max_pages = int(max_pages) if max_pages else 999999
+
+def parse(self, response):
+    news_links = response.css("h2.news-article__title a::attr(href)").getall()
+    self.logger.info(f"Página {self.current_page}: {len(news_links)} links encontrados")
+
+    if not news_links:
+        self.logger.info("No hay más noticias, finalizando scraper")
+        return
+
+    for link in news_links:
+        yield response.follow(link, callback=self.parse_noticia)
+
+    # ⭐ Agregar condición de max_pages
+    self.current_page += 1
+    if self.current_page < self.max_pages:  # ⭐ ESTA ES LA LÍNEA CLAVE
+        next_page_url = f"https://www.ambito.com/economia/{self.current_page}"
+        self.logger.info(f"Avanzando a la página {self.current_page}")
+        yield scrapy.Request(next_page_url, callback=self.parse)
+    else:
+        self.logger.info(f"Límite de {self.max_pages} páginas alcanzado")
+
+
+PASO 4: Espera a que termine
+-----------------------------
+
+El spider se detendrá automáticamente cuando encuentre una página sin noticias.
+
+Verás en la terminal:
+    [ambito] INFO: No hay más noticias, finalizando scraper
+    [scrapy.core.engine] INFO: Closing spider (finished)
+
+
+PASO 5: Encuentra tu archivo
+-----------------------------
+
+El archivo noticias.csv estará en el mismo directorio donde ejecutaste el comando.
+
+
+================================================================================
+6. TROUBLESHOOTING
+================================================================================
+
+PROBLEMA: "ModuleNotFoundError: No module named 'noticias_econ'"
+SOLUCIÓN: Estás en el directorio incorrecto. Ve a la carpeta que contiene
+          scrapy.cfg
+
+
+PROBLEMA: "Spider not found: ambito"
+SOLUCIÓN: Verifica que el archivo ambito.py esté en noticias_econ/spiders/
+          y que name = "ambito" esté correctamente definido
+
+
+PROBLEMA: El scraping es muy lento
+SOLUCIÓN: Es normal por DOWNLOAD_DELAY = 1. Puedes reducirlo a 0.5 pero
+          aumenta el riesgo de bloqueo.
+
+
+PROBLEMA: No se exporta el CSV
+SOLUCIÓN: Verifica que hay items scrapeados. Si todas las noticias fallan
+          la validación (no tienen título o cuerpo), no se crea el archivo.
+
+
+PROBLEMA: Caracteres raros en el CSV (Ã±, Ã©, etc.)
+SOLUCIÓN: Abre el CSV con un editor que soporte UTF-8 (VS Code, Sublime)
+          o en Excel: Datos > Desde texto > selecciona UTF-8
+
+
+================================================================================
+7. PRÓXIMOS PASOS
+================================================================================
+
+- Agregar más campos: categoría, autor, imágenes
+- Implementar pipelines para guardar en base de datos (MongoDB, PostgreSQL)
+- Agregar manejo de errores más robusto
+- Implementar rotación de user-agents
+- Scrapear otras secciones: política, deportes, etc.
+- Programar ejecuciones automáticas (cron, Task Scheduler)
+
+
+================================================================================
+AUTOR: [Tu nombre]
+FECHA: Enero 2026
+VERSIÓN: 1.0
+================================================================================
+
+Tutorial scraping en la Virtual Machine
+
+
+
+
+
+
+Todos los comandos de Git se corren en la carpeta raíz del proyecto, es decir, la carpeta que contiene scrapy.cfg.
+
+
