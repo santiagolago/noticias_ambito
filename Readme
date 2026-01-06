@@ -442,11 +442,374 @@ VERSIÓN: 1.0
 
 Tutorial scraping en la Virtual Machine
 
+```markdown
+# Guía paso a paso (VM DigitalOcean + Scrapy + export a CSV + tmux)
 
+Este README documenta **todo el proceso completo** para correr un spider de Scrapy en una **Virtual Machine (Droplet) de DigitalOcean** y exportar los resultados a un **CSV descargable**, con monitoreo y sin que el proceso se corte si cerrás el navegador.
 
+---
 
+## 0) Idea general (qué estamos haciendo)
 
+- Tenemos un proyecto Scrapy versionado en GitHub (`noticias_ambito`).
+- Lo clonamos en una VM Ubuntu.
+- Creamos un **entorno virtual** (`.venv`) e instalamos dependencias.
+- Corremos `scrapy crawl ...` exportando a un CSV.
+- Usamos `tmux` para que el proceso siga corriendo aunque te desconectes.
+- Bajamos el CSV a tu computadora al final.
 
-Todos los comandos de Git se corren en la carpeta raíz del proyecto, es decir, la carpeta que contiene scrapy.cfg.
+---
 
+## 1) Conectarte a la VM (Droplet)
+
+Podés entrar por:
+- la **Web Console** de DigitalOcean (lo que estabas usando), o
+- por SSH desde tu computadora (más cómodo para el futuro).
+
+En la consola vas a ver un prompt tipo:
+
+```
+
+root@ubuntu-...:~#
+
+````
+
+---
+
+## 2) Actualizar el sistema (recomendado)
+
+En Ubuntu, primero actualizás el índice de paquetes y luego aplicás upgrades:
+
+```bash
+apt update
+apt upgrade -y
+````
+
+**Nota:** si el upgrade tarda, es normal.
+
+---
+
+## 3) Instalar herramientas esenciales
+
+Instalamos lo mínimo para trabajar:
+
+* `git`: para clonar el repo
+* `python3-venv`: para crear un entorno virtual
+* `python3-pip`: para instalar paquetes Python
+* `tmux`: para mantener el proceso corriendo aunque cierres la sesión
+
+```bash
+apt install -y git python3-venv python3-pip tmux
+```
+
+Chequeos (opcionales):
+
+```bash
+git --version
+python3 --version
+pip3 --version
+tmux -V
+```
+
+---
+
+## 4) Clonar el repositorio desde GitHub
+
+Nos paramos en home (`~`) y clonamos:
+
+```bash
+cd ~
+git clone https://github.com/santiagolago/noticias_ambito.git
+```
+
+Entramos a la carpeta del proyecto:
+
+```bash
+cd noticias_ambito
+```
+
+**Chequeo importante:** acá deberías ver `scrapy.cfg` y la carpeta del proyecto.
+
+```bash
+ls
+```
+
+Tenés que ver algo como:
+
+* `scrapy.cfg`
+* `noticias_econ/`
+* `.gitignore`
+* `Readme` (o similar)
+
+---
+
+## 5) Crear un entorno virtual (venv) y activarlo
+
+Creamos el entorno virtual dentro del proyecto:
+
+```bash
+python3 -m venv .venv
+```
+
+Activamos el entorno:
+
+```bash
+source .venv/bin/activate
+```
+
+**Chequeo visual clave:** el prompt debería empezar con `(.venv)`, por ejemplo:
+
+```
+(.venv) root@ubuntu-...:~/noticias_ambito#
+```
+
+---
+
+## 6) Instalar dependencias (requirements)
+
+### Caso A: existe `requirements.txt`
+
+Si el repo tiene `requirements.txt`:
+
+```bash
+pip install -r requirements.txt
+```
+
+### Caso B: no existe `requirements.txt`
+
+Instalás al menos Scrapy:
+
+```bash
+pip install scrapy
+```
+
+Chequeo de Scrapy:
+
+```bash
+scrapy version
+```
+
+---
+
+## 7) Entender por qué usamos tmux (MUY importante)
+
+Cuando corrés un proceso “pesado” (como un scraping largo) en una terminal web o sesión SSH, si cerrás el navegador o se corta Internet, el proceso **puede cortarse**.
+
+**tmux** crea una “sesión persistente” dentro de la VM:
+
+* el scraping sigue corriendo aunque cierres la pestaña,
+* podés volver después y ver el progreso.
+
+---
+
+## 8) Crear/entrar a una sesión tmux
+
+Creamos una sesión llamada `ambito`:
+
+```bash
+tmux new -s ambito
+```
+
+A partir de acá, estás *dentro* de tmux.
+
+---
+
+## 9) Regla crítica: activar el venv DENTRO de tmux
+
+Aunque ya lo hayas activado antes, **tmux es otra sesión**.
+Por eso, dentro de tmux repetimos:
+
+```bash
+cd ~/noticias_ambito
+source .venv/bin/activate
+```
+
+Si no hacés esto, vas a ver errores como:
+
+```
+scrapy: command not found
+```
+
+Chequeo rápido:
+
+```bash
+which scrapy
+scrapy version
+```
+
+---
+
+## 10) Correr el spider exportando a CSV y guardando log
+
+Este comando:
+
+* corre el spider `ambito`,
+* guarda el output en `ambito_economia.csv`,
+* usa encoding amigable para Excel (`utf-8-sig`),
+* guarda el log completo en `ambito_run.log`,
+* y además te lo muestra en pantalla.
+
+```bash
+scrapy crawl ambito -O ambito_economia.csv -s FEED_EXPORT_ENCODING=utf-8-sig 2>&1 | tee ambito_run.log
+```
+
+### Qué significa cada parte
+
+* `scrapy crawl ambito`: corre el spider cuyo `name = "ambito"`
+* `-O ambito_economia.csv`: exporta a CSV (si ya existe, lo pisa)
+* `-s FEED_EXPORT_ENCODING=utf-8-sig`: tildes/ñ bien en Excel
+* `2>&1`: manda errores (stderr) al mismo stream que output
+* `| tee ambito_run.log`: muestra por pantalla y también guarda log a archivo
+
+---
+
+## 11) Cómo saber si está funcionando mientras corre
+
+Vas a ver líneas en vivo del tipo:
+
+* `Crawled (200) <GET ...>`
+* `Scraped from <200 ...>`
+* estadísticas periódicas
+
+Podés monitorear el archivo CSV desde otra terminal o desde otra ventana tmux.
+
+### Opción: abrir otra ventana dentro de tmux
+
+* Nueva ventana: `Ctrl + b` y luego `c`
+* Volver: `Ctrl + b` y luego `0` o `1`
+
+En esa ventana:
+
+```bash
+ls -lh ambito_economia.csv
+tail -n 2 ambito_economia.csv
+```
+
+Esto te dice si:
+
+* el archivo existe,
+* aumenta de tamaño,
+* se está escribiendo.
+
+---
+
+## 12) Cómo “salir” sin cortar el scraping (detach)
+
+**NO uses Ctrl+C** si querés que siga corriendo.
+
+Para dejarlo corriendo en segundo plano (sin matarlo):
+
+* Presioná `Ctrl + b`
+* soltás
+* presioná `d`
+
+Eso se llama **detach**.
+
+✅ El proceso queda corriendo en la VM
+✅ Podés cerrar el navegador y no pasa nada
+
+---
+
+## 13) Volver a entrar a la sesión tmux más tarde
+
+En cualquier momento, desde la VM:
+
+```bash
+tmux attach -t ambito
+```
+
+Volvés exactamente a donde estaba corriendo Scrapy.
+
+---
+
+## 14) Qué NO hacer (alertas importantes)
+
+* ❌ **No hagas `Ctrl + C` dentro del tmux**: eso corta el scraping.
+* ❌ No reinicies/apagues el droplet si querés que siga.
+* ❌ No cierres tmux con `exit` si estás en la ventana donde corre Scrapy (podés cortar la sesión).
+
+Lo correcto es:
+
+* ✅ `Ctrl+b` luego `d` (detach)
+
+---
+
+## 15) Cómo saber que terminó
+
+Cuando termine, Scrapy imprime algo como:
+
+* `Spider closed (finished)`
+* y un bloque grande de estadísticas finales.
+
+En ese punto, el CSV ya quedó en disco.
+
+---
+
+## 16) Descargar el CSV a tu computadora (con scp)
+
+El CSV está en la VM, por ejemplo:
+
+```
+/root/noticias_ambito/ambito_economia.csv
+```
+
+Desde tu computadora (no desde la VM), ejecutás:
+
+```bash
+scp root@TU_IP_PUBLICA:/root/noticias_ambito/ambito_economia.csv .
+```
+
+* `TU_IP_PUBLICA` es la IP del droplet (la ves en DigitalOcean).
+* El `.` lo guarda en el directorio actual de tu PC.
+
+En Windows, si querés bajarlo a Descargas:
+
+```bash
+scp root@TU_IP_PUBLICA:/root/noticias_ambito/ambito_economia.csv C:\Users\santi\Downloads\
+```
+
+---
+
+## 17) Revisar logs si algo falla
+
+Si el proceso se corta o querés ver el log:
+
+```bash
+tail -n 100 ambito_run.log
+```
+
+O buscar errores:
+
+```bash
+grep -i "error" ambito_run.log | tail -n 50
+```
+
+---
+
+## 18) Nota final (muy importante): paginación completa
+
+Este README documenta cómo **correr y exportar**.
+
+Pero para scrapeo “total” de la sección economía, tu spider tiene que:
+
+* seguir páginas como `/economia/1`, `/economia/2`, etc.
+* hasta que no haya más páginas.
+
+Si tu código no tiene esa lógica, solo va a scrapear la primera página.
+
+---
+
+## Mini resumen operativo
+
+1. `tmux new -s ambito`
+2. `cd ~/noticias_ambito && source .venv/bin/activate`
+3. correr el comando Scrapy con `tee`
+4. para dejarlo corriendo: `Ctrl+b` `d`
+5. para volver: `tmux attach -t ambito`
+6. para bajar CSV: `scp ...`
+
+---
+
+```
+```
 
